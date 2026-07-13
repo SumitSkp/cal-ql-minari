@@ -23,11 +23,30 @@ class TrajSampler(object):
             if self.use_goal:
                 goal_achieved_list = []
 
-            observation = self.env.reset()
+            # observation = self.env.reset() #OLD CODE
+            # making it gymnasium and gym adaptive
+            # in gymnasium 
+            # observation, info = self.env.reset()
+            
+            reset_result = self.env.reset()
+
+            if isinstance(reset_result, tuple):
+                observation = reset_result[0]
+            else:
+                observation = reset_result
 
             for _ in range(self.max_traj_length):
                 action = policy(observation.reshape(1, -1), deterministic=deterministic).reshape(-1)
-                next_observation, reward, done, env_infos = self.env.step(action)
+                
+                #next_observation, reward, done, env_infos = self.env.step(action) #OLD CODE gym
+                step_result = self.env.step(action)
+
+                if len(step_result) == 5: # minari - gymnasium case 
+                    next_observation, reward, terminated, truncated, env_infos = step_result
+                    done = terminated or truncated
+                else: # gym case
+                    next_observation, reward, done, env_infos = step_result
+
                 if self.use_goal:
                     goal_achieved = 1 if env_infos['goal_achieved'] else 0
                     goal_achieved_list.append(goal_achieved)
@@ -49,17 +68,32 @@ class TrajSampler(object):
                 """
                 Calculate Monte Carlo returns for Cal-QL
                 """
-                if "antmaze" in self.env.spec.name:
-                    mc_returns = calc_return_to_go(self.env.spec.name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=True)
-                elif self.env.spec.name in  ["pen-binary-v0", "door-binary-v0", "relocate-binary-v0", "pen-binary", "door-binary", "relocate-binary"]:
-                    mc_returns = calc_return_to_go(self.env.spec.name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=True)
+
+                env_spec = getattr(self.env, "spec", None)
+                env_id = getattr(env_spec, "id", None) or ""
+                env_name = getattr(env_spec, "name", None) or env_id
+                
+                if(env_id == "hopper-medium-v2" or env_name == "hopper-medium-v2"):
+                    mc_returns = calc_return_to_go(env_name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=False)
+                elif "antmaze" in env_name or "antmaze" in env_id:
+                    mc_returns = calc_return_to_go(env_name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=True)
+                elif env_name in  ["pen-binary-v0", "door-binary-v0", "relocate-binary-v0", "pen-binary", "door-binary", "relocate-binary"]:
+                    mc_returns = calc_return_to_go(env_name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=True)
                 else:
                     # mc_returns = calc_return_to_go(self.env.spec.name, rewards_unscaled, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=False)
                     """
                     if your new env has dense rewards, uncomment the above line will be fine
                     if your new env has sparse rewards, please check calc_return_to_go() in replay_buffer.py
                     """
-                    raise NotImplementedError
+                    mc_returns = calc_return_to_go(
+                        env_name,
+                        rewards,
+                        dones,
+                        self.gamma,
+                        self.reward_scale,
+                        self.reward_bias,
+                        is_sparse_reward=False,
+                    )
 
             if replay_buffer is not None:
                 for i in range(len(rewards)):

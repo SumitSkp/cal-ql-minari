@@ -2,7 +2,6 @@ import d4rl
 import gym
 import numpy as np
 import collections
-import minari
 
 ENV_CONFIG = {
     "antmaze": {
@@ -124,12 +123,14 @@ class ReplayBuffer(object):
 def get_d4rl_dataset_with_mc_calculation(
     env, reward_scale, reward_bias, clip_action, gamma
 ):
-    if env == "hopper-medium-v2":
+    if any(name in env for name in ["hopper", "halfcheetah", "walker2d"]):
         is_sparse_reward = False
     elif "antmaze" in env:
         is_sparse_reward = True
     else:
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"D4RL environment is not wired for Cal-QL: {env}"
+        )
     
     dataset = qlearning_dataset_and_calc_mc(
         gym.make(env).unwrapped,
@@ -456,62 +457,3 @@ def concatenate_batches(batches):
             [batch[key] for batch in batches], axis=0
         ).astype(np.float32)
     return concatenated
-
-def get_minari_dataset_with_mc_calculation(
-        minari_dataset,
-        reward_scale,
-        reward_bias,
-        clip_action,
-        gamma,
-        is_sparse_reward=False
-        ):
-
-    dataset_id = getattr(minari_dataset, "dataset_id", "")
-    episodes = []
-
-    for episode in minari_dataset:
-        observations_raw  = np.asarray(episode.observations, dtype = np.float32)
-        observations = observations_raw[:-1]
-        next_observations = observations_raw[1:]
-        actions = np.asarray(episode.actions, dtype = np.float32)
-        rewards = np.asarray(episode.rewards, dtype = np.float32)
-        terminations = np.asarray(episode.terminations, dtype = bool)
-        truncations = np.asarray(episode.truncations, dtype = bool)
-
-        rewards = rewards * reward_scale + reward_bias
-        dones = terminations.astype(np.float32)
-
-        if clip_action is not None:
-            actions = np.clip(actions, -clip_action, clip_action)
-
-        assert observations.shape[0] == actions.shape[0]
-        assert observations.shape[0] == rewards.shape[0]
-        assert observations.shape[0] == next_observations.shape[0]
-        assert observations.shape[0] == dones.shape[0]
-
-        mc_returns = calc_return_to_go(
-            dataset_id,
-            rewards,
-            dones,
-            gamma,
-            reward_scale,
-            reward_bias,
-            is_sparse_reward=is_sparse_reward,
-        )
-
-        episodes.append(
-            dict(
-                observations=observations,
-                actions=actions,
-                next_observations=next_observations,
-                rewards=rewards,
-                dones=dones,
-                mc_returns=mc_returns,
-            )
-        )
-    if not episodes:
-        raise ValueError(f"Minari dataset {dataset_id} did not contain any episodes.")
-
-    return concatenate_batches(episodes)
-
-    

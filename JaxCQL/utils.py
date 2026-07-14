@@ -50,7 +50,7 @@ class WandBLogger(object):
         config.experiment_id = config_dict.placeholder(str)
         config.anonymous = config_dict.placeholder(str)
         config.notes = config_dict.placeholder(str)
-        config.entity = None
+        config.entity = ''
 
         if updates is not None:
             config.update(ConfigDict(updates).copy_and_resolve_references())
@@ -86,13 +86,11 @@ class WandBLogger(object):
             os.environ['WANDB_API_KEY'] = wandb_config['WANDB_API_KEY']
             os.environ['WANDB_USER_EMAIL']  = wandb_config['WANDB_EMAIL']
             os.environ['WANDB_USERNAME'] = wandb_config['WANDB_USERNAME']
-            os.environ["WANDB_MODE"] = "run"
-        except:
-            print("No wandb_config.py file found...")
-            print("Are you sure to turn wandb logging off? Press c to continue, q to quit")
-            import pdb; pdb.set_trace()
-            os.environ["WANDB_MODE"] = "run"
-            self.config.online = False
+            os.environ["WANDB_MODE"] = "online"
+        except Exception:
+            print("No wandb_config.py file found; using the existing W&B login.")
+            if not self.config.online:
+                os.environ.setdefault("WANDB_MODE", "offline")
 
         self.run = wandb.init(
             reinit=True,
@@ -107,7 +105,7 @@ class WandBLogger(object):
                 _disable_stats=True,
             ),
             mode='online' if self.config.online else 'offline',
-            entity=self.config.entity,
+            entity=self.config.entity or None,
         )
 
     def log(self, *args, **kwargs):

@@ -1,9 +1,6 @@
-name: base
+name: Cal-QL
 channels:
-  - conda-forge
+  - defaults
 dependencies:
-  - python=3.13
-  - conda[version='>=26.3.2']
-  - mamba[version='>=2.5.0']
+  - python=3.10
   - pip
-prefix: /home/sumit/miniforge3

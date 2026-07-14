@@ -1,7 +1,6 @@
 import numpy as np
 import gym
 import d4rl
-import minari#
 
 import absl.app
 import absl.flags
@@ -12,9 +11,9 @@ from .replay_buffer import (
     concatenate_batches,
     get_d4rl_dataset_with_mc_calculation,
     get_hand_dataset_with_mc_calculation,
-    get_minari_dataset_with_mc_calculation,#
 )
 from .jax_utils import batch_to_jax
+from .minari_compat import is_minari_env, load_minari_dataset, make_minari_env
 from .model import TanhGaussianPolicy, FullyConnectedQFunction, SamplerPolicy
 from .sampler import TrajSampler
 from .utils import (
@@ -60,10 +59,11 @@ FLAGS_DEF = define_flags_with_default(
     online_utd_ratio=1,
     cql=ConservativeSAC.get_default_config(),
     logging=WandBLogger.get_default_config(),
-    dataset_source = "d4rl",#
-    minari_dataset_id = "",#
-    minari_download=True,#
-    minari_sparse_reward=False,#
+    # "auto" supports both --env=mujoco/... and the explicit Minari flags.
+    dataset_source="auto",
+    minari_dataset_id="",
+    minari_download=True,
+    minari_sparse_reward=False,
 )
 
 
@@ -79,29 +79,35 @@ def main(argv):
         include_exp_prefix_sub_dir=False,
     )
 
-    ####################  MINARI DATA ADAPTATION  #######################
-    minari_dataset = None
-    if FLAGS.dataset_source == "minari":
-        
-        if not FLAGS.minari_dataset_id:
-            raise ValueError("Please set --minari_dataset_id when using --dataset_source=minari.")
-        
-        minari_dataset = minari.load_dataset(FLAGS.minari_dataset_id, download = FLAGS.minari_download)
-
-        dataset = get_minari_dataset_with_mc_calculation(
-        minari_dataset = minari_dataset,
-        reward_scale = FLAGS.reward_scale,
-        reward_bias = FLAGS.reward_bias,
-        clip_action = FLAGS.clip_action,
-        gamma = FLAGS.cql.discount,
-        is_sparse_reward = FLAGS.minari_sparse_reward,    
+    dataset_source = FLAGS.dataset_source.lower()
+    if dataset_source == "auto":
+        dataset_source = (
+            "minari"
+            if FLAGS.minari_dataset_id or is_minari_env(FLAGS.env)
+            else "d4rl"
         )
-        
-        eval_env = minari_dataset.recover_environment(eval_env = True)
-        train_env = minari_dataset.recover_environment()
+
+    minari_dataset = None
+    if dataset_source == "minari":
+        dataset_id = FLAGS.minari_dataset_id or FLAGS.env
+        if not is_minari_env(dataset_id):
+            raise ValueError(
+                "Minari dataset IDs must look like 'mujoco/hopper/medium-v0'."
+            )
+
+        dataset, minari_dataset = load_minari_dataset(
+            dataset_id=dataset_id,
+            reward_scale=FLAGS.reward_scale,
+            reward_bias=FLAGS.reward_bias,
+            clip_action=FLAGS.clip_action,
+            gamma=FLAGS.cql.discount,
+            download=FLAGS.minari_download,
+            is_sparse_reward=FLAGS.minari_sparse_reward,
+        )
+        env_fn = lambda: make_minari_env(minari_dataset)
         use_goal = False
-    
-    elif FLAGS.dataset_source == "d4rl":
+
+    elif dataset_source == "d4rl":
 
         if FLAGS.env in ["pen-binary-v0", "door-binary-v0", "relocate-binary-v0"]:
             import mj_envs
@@ -114,16 +120,6 @@ def main(argv):
                 clip_action=FLAGS.clip_action,
             )
             use_goal = True
-
-        elif FLAGS.env == "hopper-medium-v2":
-            dataset = get_d4rl_dataset_with_mc_calculation(
-                FLAGS.env,
-                FLAGS.reward_scale,
-                FLAGS.reward_bias,
-                FLAGS.clip_action,
-                gamma=FLAGS.cql.discount,
-            )
-            use_goal = False
         else:
             dataset = get_d4rl_dataset_with_mc_calculation(
                 FLAGS.env,
@@ -133,23 +129,24 @@ def main(argv):
                 gamma=FLAGS.cql.discount,
             )
             use_goal = False
-        
-        eval_env = gym.make(FLAGS.env).unwrapped
-        train_env = gym.make(FLAGS.env).unwrapped
+
+        env_fn = lambda: gym.make(FLAGS.env).unwrapped
 
     else:
-        raise ValueError(f"Unknown dataset_source: {FLAGS.dataset_source}")
-    
+        raise ValueError(
+            f"Unknown dataset_source {FLAGS.dataset_source!r}; use auto, d4rl, or minari."
+        )
+
     assert dataset["next_observations"].shape == dataset["observations"].shape
 
     set_random_seed(FLAGS.seed)
 
     eval_sampler = TrajSampler(
-        eval_env, use_goal, gamma=FLAGS.cql.discount
+        env_fn(), use_goal, gamma=FLAGS.cql.discount
     )
 
     train_sampler = TrajSampler(
-        train_env,
+        env_fn(),
         use_goal,
         use_mc=True,
         gamma=FLAGS.cql.discount,
@@ -256,24 +253,11 @@ def main(argv):
                         [1 in t["goal_achieved"] for t in trajs]
                     )
                 else:
-                    # # for d4rl envs
-                    # metrics["evaluation/average_normalized_return"] = np.mean(
-                    #     [
-                    #         eval_sampler.env.get_normalized_score(np.sum(t["rewards"]))
-                    #         for t in trajs
-                    #     ]
-                    # )
                     returns = np.array([np.sum(t["rewards"]) for t in trajs])
-
-                    if minari_dataset is not None:
-                        try:
-                            metrics["evaluation/average_normalized_return"] = np.mean(
-                                minari.get_normalized_score(minari_dataset, returns)
-                            )
-                        except (AttributeError, ValueError, KeyError):
-                            pass
-
-                    elif hasattr(eval_sampler.env, "get_normalized_score"):
+                    # D4RL exposes normalized scores; Minari MuJoCo reports raw returns.
+                    if minari_dataset is None and hasattr(
+                        eval_sampler.env, "get_normalized_score"
+                    ):
                         metrics["evaluation/average_normalized_return"] = np.mean(
                             [
                                 eval_sampler.env.get_normalized_score(r)

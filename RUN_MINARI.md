@@ -1,19 +1,24 @@
-# Run Cal-QL with Minari
+# Cal-QL + Minari quick start
 
-## 1. Create the environment
+Requires Ubuntu 22.04/WSL, Miniconda, an NVIDIA driver, and MuJoCo 2.1 at
+`~/.mujoco/mujoco210`.
 
-If an old `Cal-QL` environment is broken, remove it once with
-`conda env remove -n Cal-QL -y`.
+## 1. Clone and install
 
 ```bash
+git clone -b codex/shared-minari-calql https://github.com/SumitSkp/cal-ql-minari.git
+cd cal-ql-minari
+
 source ~/miniconda3/etc/profile.d/conda.sh
 conda env create -f environment.yml
 conda activate Cal-QL
-python -m pip install numpy==1.26.4 Cython==0.29.37
 python -m pip install -r requirements-lock.txt
 ```
 
-## 2. Prepare the shell
+If a broken `Cal-QL` environment already exists, remove it first with
+`conda env remove -n Cal-QL -y`.
+
+## 2. Prepare and verify
 
 ```bash
 export D4RL_SUPPRESS_IMPORT_ERROR=1
@@ -21,12 +26,12 @@ export MUJOCO_PY_MUJOCO_PATH="$HOME/.mujoco/mujoco210"
 export LD_LIBRARY_PATH="$MUJOCO_PY_MUJOCO_PATH/bin:/usr/lib/nvidia:${LD_LIBRARY_PATH:-}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 wandb login
+python -c "import jax; print(jax.default_backend(), jax.devices())"
 ```
 
-Confirm that `python -c "import jax; print(jax.default_backend(), jax.devices())"`
-prints `gpu` before a long run.
+Continue only if the last command prints `gpu`.
 
-## 3. Run a tiny Hopper check
+## 3. Tiny Hopper smoke test
 
 ```bash
 python -m JaxCQL.conservative_sac_main \
@@ -42,6 +47,3 @@ python -m JaxCQL.conservative_sac_main \
 
 For the large seed-0 run, change the three budgets to `1000`, `1000`, and
 `250000`, and use experiment ID `NR2_Hopper_Medium_CalQL_seed0`.
-
-The older explicit flags also work:
-`--dataset_source=minari --minari_dataset_id=mujoco/hopper/medium-v0`.

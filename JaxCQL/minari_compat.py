@@ -10,7 +10,10 @@ def is_minari_env(name):
 
 
 def make_minari_env(minari_dataset):
-    return minari_dataset.recover_environment()
+    from gymnasium.wrappers import RescaleAction
+
+    env = minari_dataset.recover_environment()
+    return RescaleAction(env, min_action=-1.0, max_action=1.0)
 
 
 def load_minari_dataset(
@@ -25,6 +28,19 @@ def load_minari_dataset(
     import minari
 
     minari_dataset = minari.load_dataset(dataset_id, download=download)
+
+    reference_env = minari_dataset.recover_environment()
+    action_low = np.asarray(reference_env.action_space.low, dtype=np.float32)
+    action_high = np.asarray(reference_env.action_space.high, dtype=np.float32)
+    reference_env.close()
+
+    action_range = action_high - action_low
+    if np.any(action_range <= 0) or not np.all(np.isfinite(action_range)):
+        raise ValueError(
+            f"Unsupported action space for Minari dataset {dataset_id}: "
+            f"low={action_low}, high={action_high}"
+        )
+
     iterate_episodes = getattr(minari_dataset, "iterate_episodes", None)
     episode_iterator = (
         iterate_episodes() if callable(iterate_episodes) else iter(minari_dataset)
@@ -34,6 +50,8 @@ def load_minari_dataset(
     for episode in episode_iterator:
         observations = np.asarray(episode.observations, dtype=np.float32)
         actions = np.asarray(episode.actions, dtype=np.float32)
+        # Convert native environment actions to the policy/CQL range [-1, 1].
+        actions = 2.0 * (actions - action_low) / action_range - 1.0
         rewards = (
             np.asarray(episode.rewards, dtype=np.float32) * reward_scale
             + reward_bias

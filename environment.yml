@@ -1,8 +1,0 @@
-name: calql-minari
-channels:
-  - defaults
-dependencies:
-  - python=3.10
-  - numpy=1.26.4
-  - cython=0.29.37
-  - pip

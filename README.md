@@ -1,65 +1,49 @@
 # Cal-QL on Minari MuJoCo
 
-This repository contains our Deep Learning Lab course project at the University
-of Freiburg. We adapted the public JAX implementation of Cal-QL to the Minari
-MuJoCo datasets and ran offline-to-online experiments on Hopper, Half-Cheetah,
-Walker2d, and Humanoid.
+This repository contains our two-person Deep Learning Lab project at the
+University of Freiburg. Over roughly two months, we adapted the public JAX
+implementation of Cal-QL to the Minari MuJoCo datasets and ran offline-to-online
+experiments on Hopper, Half-Cheetah, Walker2d, and Humanoid.
 
-The main goal was to study the speed of offline-to-online transfer, not only the
-last evaluation return. We also tested replay mixing, a larger critic, and two
-exploratory safety/stability ideas: a fixed fall penalty and a learned
-`Q_fall(s,a)` cost critic.
+Our main question was whether Cal-QL transfers an offline policy to online
+learning faster than the comparison methods. We therefore looked at the full
+learning curves as well as the last evaluation return. On Humanoid, we also
+tried replay mixing, a larger critic, a fixed fall penalty, and a learned
+`Q_fall(s,a)` critic.
 
-The exact implementation notes, commands, and limitations are in
-[DLL.md](DLL.md). Short experiment commands are collected in
-[RUN_MINARI.md](RUN_MINARI.md). The submission version is tagged
-`final-submission-2026-08-05`.
+The project uses only three setup documents:
 
-## Quick CPU check
+- this README for a short overview;
+- [DLL.md](DLL.md) for our setup, commands, changes, and observations;
+- [requirements.txt](requirements.txt) for the Python packages.
 
-The smoke test does not need a GPU, a W&B account, or a downloaded Minari
-dataset.
+## Short CPU setup
+
+We used Ubuntu through WSL and Miniforge:
 
 ```bash
 git clone https://github.com/SumitSkp/cal-ql-minari.git
 cd cal-ql-minari
 
-source ~/miniforge3/etc/profile.d/conda.sh
-conda env create -f environment.yml
+source "$HOME/miniforge3/etc/profile.d/conda.sh"
+conda create --name calql-minari python=3.10 numpy=1.26.4 cython=0.29.37 pip -y
 conda activate calql-minari
 
 export PYTHONNOUSERSITE=1
-python -m pip install --no-user -r requirements-lock.txt
-bash scripts/check_submission.sh
+python -m pip install --no-user -r requirements.txt
+python scripts/smoke_test_safety.py
 ```
 
-The first JAX compilation can take around two minutes. Warnings from the old
-Gym package are only expected if the optional D4RL dependencies were installed.
+The complete setup, Minari download, CPU/GPU checks, and experiment commands
+are written in [DLL.md](DLL.md). W&B is offline in the small tests. We never
+store a W&B API key in the repository.
 
-## GPU experiments
+## Original work
 
-For the full Minari runs, install the CUDA-enabled JAX extra and verify a real
-compiled operation:
-
-```bash
-python -m pip install --no-user -r requirements-gpu.txt
-unset JAX_PLATFORM_NAME
-python -c "import jax, jax.numpy as jnp; x=(jnp.ones((8,8))@jnp.ones((8,8))).block_until_ready(); print(jax.default_backend(), jax.devices(), float(x.sum()))"
-```
-
-The host still needs a compatible NVIDIA driver. W&B is optional for local
-checks. Run `wandb login` and set `--logging.online=True` only when online
-logging is wanted; API keys must not be stored in this repository.
-
-## Relation to the original project
-
-This work builds on the public Cal-QL implementation and JaxCQL. Cal-QL was
-introduced in:
+This project builds on the public Cal-QL implementation:
 
 > Nakamoto et al., “Cal-QL: Calibrated Offline RL Pre-Training for Efficient
 > Online Fine-Tuning,” 2023. <https://arxiv.org/abs/2303.05479>
 
-The original repository and project page are:
-
-- <https://github.com/nakamotoo/Cal-QL>
-- <https://nakamotoo.github.io/projects/Cal-QL/>
+- Original repository: <https://github.com/nakamotoo/Cal-QL>
+- Project page: <https://nakamotoo.github.io/projects/Cal-QL/>

@@ -1,5 +1,0 @@
--r requirements-lock.txt
-
-# The CUDA wheels include the user-space CUDA libraries required by JAX.
-# A compatible NVIDIA driver is still required on the host.
-jax[cuda12]==0.6.2

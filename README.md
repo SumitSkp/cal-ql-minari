@@ -1,7 +1,6 @@
 # Cal-QL on Minari MuJoCo
-
-This repository contains our two-person Deep Learning Lab project at the
-University of Freiburg. Over roughly two months, we adapted the public JAX
+This repository contains our Deep Learning Lab course project at the University
+of Freiburg, where we made a study on Cal-QL. We adapted the public JAX
 implementation of Cal-QL to the Minari MuJoCo datasets and ran offline-to-online
 experiments on Hopper, Half-Cheetah, Walker2d, and Humanoid.
 

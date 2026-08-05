@@ -24,6 +24,8 @@ class TrajSampler(object):
         gamma=0.99,
         reward_scale=1.0,
         reward_bias=0.0,
+        use_fall_penalty=False,
+        fall_penalty=0.0,
     ):
         self._env = env
         self.use_goal = use_goal
@@ -31,6 +33,8 @@ class TrajSampler(object):
         self.gamma = gamma
         self.reward_scale = reward_scale
         self.reward_bias = reward_bias
+        self.use_fall_penalty = use_fall_penalty
+        self.fall_penalty = fall_penalty
         self.max_traj_length = env.spec.max_episode_steps
 
     def sample(self, policy, n_trajs, deterministic=False, replay_buffer=None):
@@ -39,8 +43,11 @@ class TrajSampler(object):
             observations = []
             actions = []
             rewards = []
+            raw_rewards = []
             next_observations = []
             dones = []
+            costs = []
+            truncations = []
             if self.use_goal:
                 goal_achieved_list = []
 
@@ -58,18 +65,30 @@ class TrajSampler(object):
                     done = terminated or truncated
                 else:
                     next_observation, reward, done, env_infos = step_result
+                    terminated = done
+                    truncated = False
 
                 if self.use_goal:
                     goal_achieved = int(bool(env_infos["goal_achieved"]))
                     goal_achieved_list.append(goal_achieved)
                     if goal_achieved:
                         done = True
+                        terminated = True
 
                 observations.append(observation)
                 actions.append(action)
-                rewards.append(reward * self.reward_scale + self.reward_bias)
+                scaled_reward = reward * self.reward_scale + self.reward_bias
+                fall_cost = float(terminated)
+                shaped_reward = (
+                    scaled_reward
+                    - float(self.use_fall_penalty) * self.fall_penalty * fall_cost
+                )
+                rewards.append(shaped_reward)
+                raw_rewards.append(scaled_reward)
                 next_observations.append(next_observation)
-                dones.append(done)
+                dones.append(float(terminated))
+                costs.append(fall_cost)
+                truncations.append(float(truncated))
                 observation = next_observation
 
                 if done:
@@ -100,16 +119,28 @@ class TrajSampler(object):
                         dones[i],
                     )
                     if self.use_mc:
-                        replay_buffer.add_sample(*sample, mc_returns[i])
+                        replay_buffer.add_sample(
+                            *sample,
+                            mc_returns=mc_returns[i],
+                            cost=costs[i],
+                            truncated=truncations[i],
+                        )
                     else:
-                        replay_buffer.add_sample(*sample)
+                        replay_buffer.add_sample(
+                            *sample,
+                            cost=costs[i],
+                            truncated=truncations[i],
+                        )
 
             traj = dict(
                 observations=np.asarray(observations, dtype=np.float32),
                 actions=np.asarray(actions, dtype=np.float32),
                 rewards=np.asarray(rewards, dtype=np.float32),
+                raw_rewards=np.asarray(raw_rewards, dtype=np.float32),
                 next_observations=np.asarray(next_observations, dtype=np.float32),
                 dones=np.asarray(dones, dtype=np.float32),
+                costs=np.asarray(costs, dtype=np.float32),
+                truncations=np.asarray(truncations, dtype=np.float32),
             )
             if self.use_mc:
                 traj["mc_returns"] = np.asarray(mc_returns, dtype=np.float32)

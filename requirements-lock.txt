@@ -1,13 +1,12 @@
-# Key versions captured from the successful RTX 4060 Week 3 runs.
-# NumPy and Cython are installed first by environment.yml for mujoco-py builds.
-gym==0.23.1
+# Reproducible CPU/Minari environment used by the submission smoke tests.
+# Python, NumPy and Cython are pinned in environment.yml.
 gymnasium==1.3.0
-mujoco-py==2.1.2.14
-mujoco==3.10.0
+mujoco==3.2.3
 minari==0.5.3
-dm-control==1.0.43
-d4rl @ git+https://github.com/nakamotoo/D4RL.git
-jax[cuda12]==0.6.2
+h5py==3.14.0
+pillow==11.3.0
+imageio==2.37.3
+jax==0.6.2
 flax==0.10.7
 optax==0.2.8
 chex==0.1.90
@@ -22,8 +21,4 @@ scipy==1.15.3
 tqdm==4.68.3
 wandb==0.28.0
 python-dateutil==2.9.0.post0
-glfw==1.4.0
-patchelf==0.17.2.4
-moviepy==2.2.1
-imageio==2.37.3
-pybullet==3.2.7
+typing-extensions==4.13.2

@@ -1,5 +1,3 @@
-import d4rl
-import gym
 import numpy as np
 import collections
 
@@ -43,13 +41,23 @@ class ReplayBuffer(object):
         self._actions = np.zeros((self._max_size, action_dim), dtype=np.float32)
         self._rewards = np.zeros(self._max_size, dtype=np.float32)
         self._dones = np.zeros(self._max_size, dtype=np.float32)
+        self._costs = np.zeros(self._max_size, dtype=np.float32)
+        self._truncations = np.zeros(self._max_size, dtype=np.float32)
         self._mc_returns = np.zeros(self._max_size, dtype=np.float32)
         self._next_idx = 0
         self._size = 0
         self._initialized = True
 
     def add_sample(
-        self, observation, action, reward, next_observation, done, mc_returns=-1
+        self,
+        observation,
+        action,
+        reward,
+        next_observation,
+        done,
+        mc_returns=-1,
+        cost=0.0,
+        truncated=False,
     ):
         if not self._initialized:
             self._init_storage(observation.size, action.size)
@@ -61,6 +69,8 @@ class ReplayBuffer(object):
         self._actions[self._next_idx, :] = np.array(action, dtype=np.float32)
         self._rewards[self._next_idx] = reward
         self._dones[self._next_idx] = float(done)
+        self._costs[self._next_idx] = float(cost)
+        self._truncations[self._next_idx] = float(truncated)
         self._mc_returns[self._next_idx] = mc_returns
 
         if self._size < self._max_size:
@@ -75,13 +85,20 @@ class ReplayBuffer(object):
             self.add_sample(o, a, r, no, d)
 
     def add_batch(self, batch):
-        self.add_traj(
-            batch["observations"],
-            batch["actions"],
-            batch["rewards"],
-            batch["next_observations"],
-            batch["dones"],
-        )
+        costs = batch.get("costs", np.zeros_like(batch["rewards"]))
+        truncations = batch.get("truncations", np.zeros_like(batch["rewards"]))
+        mc_returns = batch.get("mc_returns", np.full_like(batch["rewards"], -1.0))
+        for i in range(batch["rewards"].shape[0]):
+            self.add_sample(
+                batch["observations"][i],
+                batch["actions"][i],
+                batch["rewards"][i],
+                batch["next_observations"][i],
+                batch["dones"][i],
+                mc_returns=mc_returns[i],
+                cost=costs[i],
+                truncated=truncations[i],
+            )
 
     def sample(self, batch_size):
         indices = np.random.randint(len(self), size=batch_size)
@@ -94,6 +111,8 @@ class ReplayBuffer(object):
             rewards=self._rewards[indices, ...],
             next_observations=self._next_observations[indices, ...],
             dones=self._dones[indices, ...],
+            costs=self._costs[indices, ...],
+            truncations=self._truncations[indices, ...],
             mc_returns=self._mc_returns[indices, ...],
         )
 
@@ -115,14 +134,27 @@ class ReplayBuffer(object):
             rewards=self._rewards[: self._size, ...],
             next_observations=self._next_observations[: self._size, ...],
             dones=self._dones[: self._size, ...],
+            costs=self._costs[: self._size, ...],
+            truncations=self._truncations[: self._size, ...],
             mc_returns=self._mc_returns[: self._size, ...],
         )
 
 
 # based on https://github.com/Farama-Foundation/D4RL/blob/master/d4rl/__init__.py
 def get_d4rl_dataset_with_mc_calculation(
-    env, reward_scale, reward_bias, clip_action, gamma
+    env,
+    reward_scale,
+    reward_bias,
+    clip_action,
+    gamma,
+    use_fall_penalty=False,
+    fall_penalty=0.0,
 ):
+    # Keep the legacy stack optional. Importing D4RL also registers its Gym
+    # environments, but Minari runs and the small smoke test do not need it.
+    import d4rl  # noqa: F401
+    import gym
+
     if any(name in env for name in ["hopper", "halfcheetah", "walker2d"]):
         is_sparse_reward = False
     elif "antmaze" in env:
@@ -139,6 +171,8 @@ def get_d4rl_dataset_with_mc_calculation(
         clip_action,
         gamma,
         is_sparse_reward=is_sparse_reward,
+        use_fall_penalty=use_fall_penalty,
+        fall_penalty=fall_penalty,
     )
 
     return dict(
@@ -147,6 +181,8 @@ def get_d4rl_dataset_with_mc_calculation(
         next_observations=dataset["next_observations"],
         rewards=dataset["rewards"],
         dones=dataset["terminals"].astype(np.float32),
+        costs=dataset["costs"].astype(np.float32),
+        truncations=dataset["truncations"].astype(np.float32),
         mc_returns=dataset["mc_returns"],
     )
 
@@ -223,6 +259,8 @@ def get_hand_dataset_with_mc_calculation(
             actions=actions,
             rewards=rewards,
             dones=dones,
+            costs=dones.astype(np.float32),
+            truncations=np.zeros_like(dones, dtype=np.float32),
             mc_returns=mc_returns,
         )
 
@@ -323,6 +361,8 @@ def qlearning_dataset_and_calc_mc(
     dataset=None,
     terminate_on_end=False,
     is_sparse_reward=True,
+    use_fall_penalty=False,
+    fall_penalty=0.0,
     **kwargs,
 ):
     dataset = env.get_dataset(**kwargs)
@@ -370,6 +410,14 @@ def qlearning_dataset_and_calc_mc(
 
             episode_data["rewards"] = (
                 episode_data["rewards"] * reward_scale + reward_bias
+            )
+            episode_data["costs"] = episode_data["terminals"].astype(np.float32)
+            episode_data["truncations"] = episode_data.get(
+                "timeouts", np.zeros_like(episode_data["terminals"])
+            ).astype(np.float32)
+            episode_data["rewards"] = (
+                episode_data["rewards"]
+                - float(use_fall_penalty) * fall_penalty * episode_data["costs"]
             )
             episode_data["mc_returns"] = calc_return_to_go(
                 env.spec.name,

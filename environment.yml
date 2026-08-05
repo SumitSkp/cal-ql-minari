@@ -1,4 +1,4 @@
-name: Cal-QL
+name: calql-minari
 channels:
   - defaults
 dependencies:

@@ -24,6 +24,8 @@ def load_minari_dataset(
     gamma,
     download=True,
     is_sparse_reward=False,
+    use_fall_penalty=False,
+    fall_penalty=0.0,
 ):
     import minari
 
@@ -58,6 +60,14 @@ def load_minari_dataset(
         )
         # Time-limit truncation ends collection but is not a true MDP terminal.
         dones = np.asarray(episode.terminations, dtype=np.float32)
+        truncations = np.asarray(
+            getattr(episode, "truncations", np.zeros_like(dones)),
+            dtype=np.float32,
+        )
+        fall_costs = dones.astype(np.float32)
+        rewards_for_training = (
+            rewards - float(use_fall_penalty) * fall_penalty * fall_costs
+        )
 
         if clip_action is not None:
             actions = np.clip(actions, -clip_action, clip_action)
@@ -67,6 +77,7 @@ def load_minari_dataset(
             observations.shape[0] == transition_count + 1
             and rewards.shape[0] == transition_count
             and dones.shape[0] == transition_count
+            and truncations.shape[0] == transition_count
         ):
             raise ValueError(f"Malformed episode in Minari dataset {dataset_id}")
 
@@ -75,11 +86,13 @@ def load_minari_dataset(
                 observations=observations[:-1],
                 actions=actions,
                 next_observations=observations[1:],
-                rewards=rewards,
+                rewards=rewards_for_training,
                 dones=dones,
+                costs=fall_costs,
+                truncations=truncations,
                 mc_returns=calc_return_to_go(
                     dataset_id,
-                    rewards,
+                    rewards_for_training,
                     dones,
                     gamma,
                     reward_scale,

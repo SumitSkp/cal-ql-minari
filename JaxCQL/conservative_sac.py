@@ -29,8 +29,11 @@ class ConservativeSAC(object):
         config.target_entropy = 0.0
         config.policy_lr = 1e-4
         config.qf_lr = 3e-4
+        config.cost_qf_lr = 3e-4
         config.optimizer_type = 'adam'
         config.soft_target_update_rate = 5e-3
+        config.use_cost_critic = False
+        config.cost_discount = 1.0
         config.cql_n_actions = 10
         config.cql_importance_sample = True
         config.cql_lagrange = False
@@ -95,6 +98,32 @@ class ConservativeSAC(object):
         self._target_qf_params = deepcopy({'qf1': qf1_params, 'qf2': qf2_params})
         model_keys = ['policy', 'qf1', 'qf2']
 
+        if self.config.use_cost_critic:
+            cost_qf1_params = self.qf.init(
+                next_rng(self.qf.rng_keys()),
+                jnp.zeros((10, self.observation_dim)),
+                jnp.zeros((10, self.action_dim)),
+            )
+            cost_qf2_params = self.qf.init(
+                next_rng(self.qf.rng_keys()),
+                jnp.zeros((10, self.observation_dim)),
+                jnp.zeros((10, self.action_dim)),
+            )
+            self._train_states['cost_qf1'] = TrainState.create(
+                params=cost_qf1_params,
+                tx=optimizer_class(self.config.cost_qf_lr),
+                apply_fn=None,
+            )
+            self._train_states['cost_qf2'] = TrainState.create(
+                params=cost_qf2_params,
+                tx=optimizer_class(self.config.cost_qf_lr),
+                apply_fn=None,
+            )
+            self._target_qf_params.update(
+                deepcopy({'cost_qf1': cost_qf1_params, 'cost_qf2': cost_qf2_params})
+            )
+            model_keys.extend(['cost_qf1', 'cost_qf2'])
+
         if self.config.use_automatic_entropy_tuning:
             self.log_alpha = Scalar(0.0)
             self._train_states['log_alpha'] = TrainState.create(
@@ -116,15 +145,39 @@ class ConservativeSAC(object):
         self._model_keys = tuple(model_keys)
         self._total_steps = 0
 
-    def train(self, batch,  use_cql=True, cql_min_q_weight=5.0, enable_calql=False):
+    def train(
+        self,
+        batch,
+        use_cql=True,
+        cql_min_q_weight=5.0,
+        enable_calql=False,
+        cost_lambda=0.0,
+    ):
         self._total_steps += 1
         self._train_states, self._target_qf_params, metrics = self._train_step(
-            self._train_states, self._target_qf_params, next_rng(), batch, use_cql, cql_min_q_weight, enable_calql
+            self._train_states,
+            self._target_qf_params,
+            next_rng(),
+            batch,
+            use_cql,
+            cql_min_q_weight,
+            enable_calql,
+            cost_lambda,
         )
         return metrics
 
     @partial(jax.jit, static_argnames=('self', 'use_cql', 'cql_min_q_weight', 'enable_calql'))
-    def _train_step(self, train_states, target_qf_params, rng, batch, use_cql=True, cql_min_q_weight=5.0, enable_calql=False):
+    def _train_step(
+        self,
+        train_states,
+        target_qf_params,
+        rng,
+        batch,
+        use_cql=True,
+        cql_min_q_weight=5.0,
+        enable_calql=False,
+        cost_lambda=0.0,
+    ):
         rng_generator = JaxRNG(rng)
         def loss_fn(train_params):
             observations = batch['observations']
@@ -132,6 +185,7 @@ class ConservativeSAC(object):
             rewards = batch['rewards']
             next_observations = batch['next_observations']
             dones = batch['dones']
+            costs = batch.get('costs', jnp.zeros_like(rewards))
 
             loss_collection = {}
 
@@ -165,7 +219,17 @@ class ConservativeSAC(object):
                 forward_qf(train_params['qf1'], observations, new_actions),
                 forward_qf(train_params['qf2'], observations, new_actions),
             )
-            policy_loss = (alpha*log_pi - q_new_actions).mean()
+            if self.config.use_cost_critic:
+                q_cost_new_actions = jnp.maximum(
+                    forward_qf(train_params['cost_qf1'], observations, new_actions),
+                    forward_qf(train_params['cost_qf2'], observations, new_actions),
+                )
+                policy_loss = (
+                    alpha * log_pi - q_new_actions + cost_lambda * q_cost_new_actions
+                ).mean()
+            else:
+                q_cost_new_actions = jnp.zeros_like(q_new_actions)
+                policy_loss = (alpha*log_pi - q_new_actions).mean()
 
             loss_collection['policy'] = policy_loss
 
@@ -201,6 +265,43 @@ class ConservativeSAC(object):
             )
             qf1_bellman_loss = mse_loss(q1_pred, td_target)
             qf2_bellman_loss = mse_loss(q2_pred, td_target)
+
+            if self.config.use_cost_critic:
+                cost_next_actions, _ = forward_policy(
+                    train_params['policy'], next_observations
+                )
+                target_cost_values = jnp.maximum(
+                    forward_qf(
+                        target_qf_params['cost_qf1'],
+                        next_observations,
+                        cost_next_actions,
+                    ),
+                    forward_qf(
+                        target_qf_params['cost_qf2'],
+                        next_observations,
+                        cost_next_actions,
+                    ),
+                )
+                cost_td_target = jax.lax.stop_gradient(
+                    costs + (1. - dones) * self.config.cost_discount * target_cost_values
+                )
+                cost_q1_pred = forward_qf(
+                    train_params['cost_qf1'], observations, actions
+                )
+                cost_q2_pred = forward_qf(
+                    train_params['cost_qf2'], observations, actions
+                )
+                cost_qf1_loss = mse_loss(cost_q1_pred, cost_td_target)
+                cost_qf2_loss = mse_loss(cost_q2_pred, cost_td_target)
+                loss_collection['cost_qf1'] = cost_qf1_loss
+                loss_collection['cost_qf2'] = cost_qf2_loss
+            else:
+                target_cost_values = jnp.zeros_like(rewards)
+                cost_td_target = jnp.zeros_like(rewards)
+                cost_q1_pred = jnp.zeros_like(rewards)
+                cost_q2_pred = jnp.zeros_like(rewards)
+                cost_qf1_loss = jnp.asarray(0.0)
+                cost_qf2_loss = jnp.asarray(0.0)
 
             ### CQL
             if use_cql:
@@ -334,21 +435,37 @@ class ConservativeSAC(object):
             new_train_states['qf2'].params, target_qf_params['qf2'],
             self.config.soft_target_update_rate
         )
+        if self.config.use_cost_critic:
+            new_target_qf_params['cost_qf1'] = update_target_network(
+                new_train_states['cost_qf1'].params,
+                target_qf_params['cost_qf1'],
+                self.config.soft_target_update_rate,
+            )
+            new_target_qf_params['cost_qf2'] = update_target_network(
+                new_train_states['cost_qf2'].params,
+                target_qf_params['cost_qf2'],
+                self.config.soft_target_update_rate,
+            )
 
         metrics = collect_jax_metrics(
             aux_values,
             ['log_pi', 'policy_loss', 'qf1_loss', 'qf2_loss', 'alpha_loss',
-             'alpha', 'q1_pred', 'q2_pred', 'target_q_values', 'policy_loss_gradient', 'qf1_loss_gradient', 'qf2_loss_gradient']
+             'alpha', 'q1_pred', 'q2_pred', 'target_q_values',
+             'q_cost_new_actions', 'cost_qf1_loss', 'cost_qf2_loss',
+             'cost_td_target', 'cost_q1_pred', 'cost_q2_pred',
+             'target_cost_values', 'costs', 'policy_loss_gradient',
+             'qf1_loss_gradient', 'qf2_loss_gradient']
         )
         metrics.update(policy_loss_gradient=policy_loss_gradient, qf1_loss_gradient=qf1_loss_gradient, qf2_loss_gradient=qf2_loss_gradient)
         metrics.update(use_cql=int(use_cql), enable_calql=int(enable_calql), cql_min_q_weight=cql_min_q_weight)
+        metrics.update(use_cost_critic=int(self.config.use_cost_critic), cost_lambda=cost_lambda)
 
         if use_cql:
             metrics.update(collect_jax_metrics(
                 aux_values,
                 ['cql_std_q1', 'cql_std_q2', 'cql_q1_rand', 'cql_q2_rand',
                  'cql_qf1_diff', 'cql_qf2_diff', 'cql_min_qf1_loss',
-                 'cql_min_qf2_loss', 'cql_q1_current_actions', 'cql_q2_current_actions'
+                 'cql_min_qf2_loss', 'cql_q1_current_actions', 'cql_q2_current_actions',
                  'cql_q1_next_actions', 'cql_q2_next_actions', 'alpha_prime',
                  'alpha_prime_loss', 'qf1_bellman_loss', 'qf2_bellman_loss',
                  'bound_rate_cql_q1_current_actions', 'bound_rate_cql_q2_current_actions', 'bound_rate_cql_q1_next_actions', 'bound_rate_ql_q2_next_actions', 'log_pi_data'],

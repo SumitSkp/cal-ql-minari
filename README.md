@@ -1,89 +1,65 @@
-# Cal-QL
-This is the implementation for our paper [Cal-QL: Calibrated Offline RL Pre-Training for Efficient Online Fine-Tuning](https://arxiv.org/abs/2303.05479) in Jax and Flax. 
-- paper link: https://arxiv.org/abs/2303.05479
-- project page: https://nakamotoo.github.io/projects/Cal-QL/
-- video: https://youtu.be/r9CCdLeMJTg
+# Cal-QL on Minari MuJoCo
 
-This codebase is built upon [JaxCQL](https://github.com/young-geng/JaxCQL) repository.
+This repository contains our Deep Learning Lab course project at the University
+of Freiburg. We adapted the public JAX implementation of Cal-QL to the Minari
+MuJoCo datasets and ran offline-to-online experiments on Hopper, Half-Cheetah,
+Walker2d, and Humanoid.
 
-If you find this repository useful for your research, please cite:
+The main goal was to study the speed of offline-to-online transfer, not only the
+last evaluation return. We also tested replay mixing, a larger critic, and two
+exploratory safety/stability ideas: a fixed fall penalty and a learned
+`Q_fall(s,a)` cost critic.
 
-```
-@article{nakamoto2023calql,
-  author       = {Mitsuhiko Nakamoto and Yuexiang Zhai and Anikait Singh and Max Sobol Mark and Yi Ma and Chelsea Finn and Aviral Kumar and Sergey Levine},
-  title        = {Cal-QL: Calibrated Offline RL Pre-Training for Efficient Online Fine-Tuning},
-  conference   = {arXiv Pre-print},
-  year         = {2023},
-  url          = {https://arxiv.org/abs/2303.05479},
-}
-```
+The exact implementation notes, commands, and limitations are in
+[DLL.md](DLL.md). Short experiment commands are collected in
+[RUN_MINARI.md](RUN_MINARI.md). The submission version is tagged
+`final-submission-2026-08-05`.
 
-## Installation
-1. Install MuJoCo
-- Download [MuJoCo key](https://www.roboti.us/license.html) and [MuJoCo 2.1 binaries](https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz)
-- Extract the downloaded `mujoco210` and `mjkey.txt` into `~/.mujoco/mujoco210` and `~/.mujoco/mjkey.txt`
+## Quick CPU check
 
-2. Add following environment variables into `~/.bashrc`
-```
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/.mujoco/mujoco210/bin
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
-```
+The smoke test does not need a GPU, a W&B account, or a downloaded Minari
+dataset.
 
-3. Install and use the included Ananconda environment
-```
-$ conda create -c nvidia -n Cal-QL python=3.8 cuda-nvcc=11.3
-$ conda activate Cal-QL
-$ pip install -r requirements.txt
+```bash
+git clone https://github.com/SumitSkp/cal-ql-minari.git
+cd cal-ql-minari
+
+source ~/miniforge3/etc/profile.d/conda.sh
+conda env create -f environment.yml
+conda activate calql-minari
+
+export PYTHONNOUSERSITE=1
+python -m pip install --no-user -r requirements-lock.txt
+bash scripts/check_submission.sh
 ```
 
-4. Set up W&B API keys
+The first JAX compilation can take around two minutes. Warnings from the old
+Gym package are only expected if the optional D4RL dependencies were installed.
 
-This codebase visualizes the logs using [Weights and Biases](https://wandb.ai/site). To enable this, you first need to set up your W&B API key by: 
-- Make a file named `wandb_config.py` under `JaxCQL` folder with the following information filled in
+## GPU experiments
+
+For the full Minari runs, install the CUDA-enabled JAX extra and verify a real
+compiled operation:
+
+```bash
+python -m pip install --no-user -r requirements-gpu.txt
+unset JAX_PLATFORM_NAME
+python -c "import jax, jax.numpy as jnp; x=(jnp.ones((8,8))@jnp.ones((8,8))).block_until_ready(); print(jax.default_backend(), jax.devices(), float(x.sum()))"
 ```
-def get_wandb_config():
-    return dict (
-        WANDB_API_KEY = 'your api key',
-        WANDB_EMAIL = 'your email',
-        WANDB_USERNAME = 'user'
-    )
-```
-You can simply copy [JaxCQL/wandb_config_example.py](JaxCQL/wandb_config_example.py), rename it to `wandb_config.py` and fill in the information.
 
-## Run Experiments
-### AntMaze
-You can run experiments using the following command:
-```
-$ bash scripts/run_antmaze.sh
-```
-Please check [scripts/run_antmaze.sh](scripts/run_antmaze.sh) for the details.
-All available command options can be seen in conservative\_sac_main.py and conservative_sac.py.
+The host still needs a compatible NVIDIA driver. W&B is optional for local
+checks. Run `wandb login` and set `--logging.online=True` only when online
+logging is wanted; API keys must not be stored in this repository.
 
-### Adroit Binary
-1. Download the offline dataset from [here](https://drive.google.com/file/d/1yUdJnGgYit94X_AvV6JJP5Y3Lx2JF30Y/view) and unzip the files into `<this repositroy>/demonstrations/offpolicy_hand_data/*.npy` 
-2. We should also install `mj_envs` from [this fork](https://github.com/nakamotoo/mj_envs)
-```
-$ git clone --recursive https://github.com/nakamotoo/mj_envs.git
-$ cd mj_envs  
-$ git submodule update --remote
-$ pip install -e .
-```
-3. Now you can run experiments using the following command:
- ```
-$ bash scripts/run_adroit.sh
-```
-Please check [scripts/run_adroit.sh](scripts/run_adroit.sh) for the details.
+## Relation to the original project
 
-### Other Environments
-At the moment, this repository only has AntMaze and Adroit implemented. FrankaKitchen is planned to be added soon, but if you are in a hurry or would like to try other tasks (such as the visual manipulation domain in the paper), please contact me at nakamoto\[at\]berkeley\[dot\]edu.
+This work builds on the public Cal-QL implementation and JaxCQL. Cal-QL was
+introduced in:
 
-## Sample Runs and Logs
-In order to enable other readers to replicate our results easily, we have conducted a sweep for Cal-QL and CQL in the AntMaze and Adroit domains and made the corresponding W&B logs publicly accessible. The logs can be found here: https://wandb.ai/mitsuhiko/Cal-QL--Examples?workspace=user-mitsuhiko
+> Nakamoto et al., “Cal-QL: Calibrated Offline RL Pre-Training for Efficient
+> Online Fine-Tuning,” 2023. <https://arxiv.org/abs/2303.05479>
 
-You can choose the environment to visualize by filering on `env`. Cal-QL runs are indicated by `enable-calql=True`, and CQL runs are denoted by `enable-calql=False`. Each env has been run across 4 seeds.
+The original repository and project page are:
 
-## Credits
-This project is built upon Young Geng's [JaxCQL](https://github.com/young-geng/JaxCQL) repository.
-The CQL implementation is based on [CQL](https://github.com/aviralkumar2907/CQL).
-
-In case of any questions, bugs, suggestions or improvements, please feel free to contact me at nakamoto\[at\]berkeley\[dot\]edu 
+- <https://github.com/nakamotoo/Cal-QL>
+- <https://nakamotoo.github.io/projects/Cal-QL/>

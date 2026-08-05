@@ -1,6 +1,4 @@
 import numpy as np
-import gym
-import d4rl
 
 import absl.app
 import absl.flags
@@ -55,6 +53,12 @@ FLAGS_DEF = define_flags_with_default(
     cql_min_q_weight=5.0,
     cql_min_q_weight_online=-1.0,
     enable_calql=True,  # Turn on for Cal-QL
+    # Exploratory safety/stability ablations. They are off unless the run sets flags.
+    use_fall_penalty=False,
+    fall_penalty=0.0,
+    use_cost_critic=False,
+    cost_lambda=0.0,
+    cost_discount=1.0,
     n_online_traj_per_epoch=1,
     online_utd_ratio=1,
     cql=ConservativeSAC.get_default_config(),
@@ -103,11 +107,17 @@ def main(argv):
             gamma=FLAGS.cql.discount,
             download=FLAGS.minari_download,
             is_sparse_reward=FLAGS.minari_sparse_reward,
+            use_fall_penalty=FLAGS.use_fall_penalty,
+            fall_penalty=FLAGS.fall_penalty,
         )
         env_fn = lambda: make_minari_env(minari_dataset)
         use_goal = False
 
     elif dataset_source == "d4rl":
+        # These legacy packages are only needed for the original D4RL tasks.
+        # Minari experiments use Gymnasium and modern MuJoCo instead.
+        import d4rl  # noqa: F401 - importing registers the D4RL environments
+        import gym
 
         if FLAGS.env in ["pen-binary-v0", "door-binary-v0", "relocate-binary-v0"]:
             import mj_envs
@@ -127,6 +137,8 @@ def main(argv):
                 FLAGS.reward_bias,
                 FLAGS.clip_action,
                 gamma=FLAGS.cql.discount,
+                use_fall_penalty=FLAGS.use_fall_penalty,
+                fall_penalty=FLAGS.fall_penalty,
             )
             use_goal = False
 
@@ -142,7 +154,13 @@ def main(argv):
     set_random_seed(FLAGS.seed)
 
     eval_sampler = TrajSampler(
-        env_fn(), use_goal, gamma=FLAGS.cql.discount
+        env_fn(),
+        use_goal,
+        gamma=FLAGS.cql.discount,
+        reward_scale=FLAGS.reward_scale,
+        reward_bias=FLAGS.reward_bias,
+        use_fall_penalty=FLAGS.use_fall_penalty,
+        fall_penalty=FLAGS.fall_penalty,
     )
 
     train_sampler = TrajSampler(
@@ -152,6 +170,8 @@ def main(argv):
         gamma=FLAGS.cql.discount,
         reward_scale=FLAGS.reward_scale,
         reward_bias=FLAGS.reward_bias,
+        use_fall_penalty=FLAGS.use_fall_penalty,
+        fall_penalty=FLAGS.fall_penalty,
     )
     replay_buffer = ReplayBuffer(FLAGS.replay_buffer_size)
 
@@ -174,6 +194,9 @@ def main(argv):
     if FLAGS.cql.target_entropy >= 0.0:
         FLAGS.cql.target_entropy = -np.prod(eval_sampler.env.action_space.shape).item()
 
+    FLAGS.cql.use_cost_critic = FLAGS.use_cost_critic
+    FLAGS.cql.cost_discount = FLAGS.cost_discount
+
     sac = ConservativeSAC(FLAGS.cql, policy, qf)
     sampler_policy = SamplerPolicy(sac.policy, sac.train_params["policy"])
 
@@ -183,6 +206,7 @@ def main(argv):
     enable_calql = FLAGS.enable_calql
     use_cql = FLAGS.use_cql
     mixing_ratio = FLAGS.mixing_ratio
+    cost_lambda = FLAGS.cost_lambda
 
     total_grad_steps = 0
     is_online = False
@@ -244,8 +268,20 @@ def main(argv):
                 metrics["evaluation/average_return"] = np.mean(
                     [np.sum(t["rewards"]) for t in trajs]
                 )
+                metrics["evaluation/average_raw_return"] = np.mean(
+                    [np.sum(t.get("raw_rewards", t["rewards"])) for t in trajs]
+                )
                 metrics["evaluation/average_traj_length"] = np.mean(
                     [len(t["rewards"]) for t in trajs]
+                )
+                metrics["evaluation/fall_rate"] = np.mean(
+                    [np.sum(t.get("costs", [])) > 0 for t in trajs]
+                )
+                metrics["evaluation/average_fall_cost"] = np.mean(
+                    [np.sum(t.get("costs", [])) for t in trajs]
+                )
+                metrics["evaluation/timeout_rate"] = np.mean(
+                    [np.sum(t.get("truncations", [])) > 0 for t in trajs]
                 )
                 if use_goal:
                     # for adroit envs
@@ -253,7 +289,9 @@ def main(argv):
                         [1 in t["goal_achieved"] for t in trajs]
                     )
                 else:
-                    returns = np.array([np.sum(t["rewards"]) for t in trajs])
+                    returns = np.array(
+                        [np.sum(t.get("raw_rewards", t["rewards"])) for t in trajs]
+                    )
                     # D4RL exposes normalized scores; Minari MuJoCo reports raw returns.
                     if minari_dataset is None and hasattr(
                         eval_sampler.env, "get_normalized_score"
@@ -275,6 +313,7 @@ def main(argv):
                     wandb_logger.save_pickle(save_data, "model.pkl")
 
         metrics["grad_steps"] = total_grad_steps
+        metrics["cost_lambda"] = cost_lambda
         if is_online:
             metrics["env_steps"] = replay_buffer.total_steps
         metrics["epoch"] = epoch
@@ -315,8 +354,20 @@ def main(argv):
                 expl_metrics["exploration/average_return"] = np.mean(
                     [np.sum(t["rewards"]) for t in trajs]
                 )
+                expl_metrics["exploration/average_raw_return"] = np.mean(
+                    [np.sum(t.get("raw_rewards", t["rewards"])) for t in trajs]
+                )
                 expl_metrics["exploration/average_traj_length"] = np.mean(
                     [len(t["rewards"]) for t in trajs]
+                )
+                expl_metrics["exploration/fall_rate"] = np.mean(
+                    [np.sum(t.get("costs", [])) > 0 for t in trajs]
+                )
+                expl_metrics["exploration/average_fall_cost"] = np.mean(
+                    [np.sum(t.get("costs", [])) for t in trajs]
+                )
+                expl_metrics["exploration/timeout_rate"] = np.mean(
+                    [np.sum(t.get("truncations", [])) > 0 for t in trajs]
                 )
                 if use_goal:
                     expl_metrics["exploration/goal_achieved_rate"] = np.mean(
@@ -362,6 +413,7 @@ def main(argv):
                         use_cql=use_cql,
                         cql_min_q_weight=cql_min_q_weight,
                         enable_calql=enable_calql,
+                        cost_lambda=cost_lambda,
                     ),
                     "sac",
                 )
